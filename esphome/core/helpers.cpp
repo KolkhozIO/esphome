@@ -279,20 +279,110 @@ template<int (*fn)(int)> std::string str_ctype_transform(const std::string &str)
 std::string str_lower_case(const std::string &str) { return str_ctype_transform<std::tolower>(str); }
 std::string str_upper_case(const std::string &str) { return str_ctype_transform<std::toupper>(str); }
 std::string str_snake_case(const std::string &str) {
-  std::string result;
-  result.resize(str.length());
-  std::transform(str.begin(), str.end(), result.begin(), ::tolower);
+  // Use the ctype-aware helper so we only lowercase ASCII characters and
+  // leave multi-byte UTF-8 sequences untouched before replacing spaces with
+  // underscores. This keeps Cyrillic and other Unicode characters intact
+  // when generating default object IDs.
+  std::string result = str_ctype_transform<std::tolower>(str);
   std::replace(result.begin(), result.end(), ' ', '_');
   return result;
 }
+namespace {
+
+bool is_allowed_ascii(unsigned char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_';
+}
+
+struct Utf8Char {
+  size_t length;
+  bool valid;
+};
+
+Utf8Char inspect_utf8(const std::string &str, size_t index) {
+  const size_t remaining = str.size() - index;
+  const unsigned char lead = static_cast<unsigned char>(str[index]);
+
+  if (lead < 0x80u) {
+    return {1u, true};
+  }
+
+  auto continuation = [&](size_t offset) -> unsigned char {
+    return static_cast<unsigned char>(str[index + offset]);
+  };
+
+  if (lead >= 0xC2u && lead <= 0xDFu) {
+    if (remaining < 2u) {
+      return {1u, false};
+    }
+    const unsigned char c1 = continuation(1u);
+    if ((c1 & 0xC0u) != 0x80u) {
+      return {1u, false};
+    }
+    return {2u, true};
+  }
+
+  if (lead >= 0xE0u && lead <= 0xEFu) {
+    if (remaining < 3u) {
+      return {1u, false};
+    }
+    const unsigned char c1 = continuation(1u);
+    const unsigned char c2 = continuation(2u);
+    if ((c1 & 0xC0u) != 0x80u || (c2 & 0xC0u) != 0x80u) {
+      return {1u, false};
+    }
+    if ((lead == 0xE0u && c1 < 0xA0u) || (lead == 0xEDu && c1 >= 0xA0u)) {
+      return {1u, false};
+    }
+    return {3u, true};
+  }
+
+  if (lead >= 0xF0u && lead <= 0xF4u) {
+    if (remaining < 4u) {
+      return {1u, false};
+    }
+    const unsigned char c1 = continuation(1u);
+    const unsigned char c2 = continuation(2u);
+    const unsigned char c3 = continuation(3u);
+    if ((c1 & 0xC0u) != 0x80u || (c2 & 0xC0u) != 0x80u || (c3 & 0xC0u) != 0x80u) {
+      return {1u, false};
+    }
+    if ((lead == 0xF0u && c1 < 0x90u) || (lead == 0xF4u && c1 >= 0x90u)) {
+      return {1u, false};
+    }
+    return {4u, true};
+  }
+
+  return {1u, false};
+}
+
+}  // namespace
+
 std::string str_sanitize(const std::string &str) {
-  std::string out = str;
-  std::replace_if(
-      out.begin(), out.end(),
-      [](const char &c) {
-        return !(c == '-' || c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
-      },
-      '_');
+  std::string out;
+  out.reserve(str.size());
+
+  for (size_t i = 0; i < str.size();) {
+    const unsigned char byte = static_cast<unsigned char>(str[i]);
+    if (byte < 0x80u) {
+      out.push_back(is_allowed_ascii(byte) ? static_cast<char>(byte) : '_');
+      ++i;
+      continue;
+    }
+
+    const Utf8Char utf8 = inspect_utf8(str, i);
+    // Preserve multi-byte UTF-8 sequences so MQTT topics derived from friendly names stay
+    // readable while keeping the legacy ASCII whitelist intact. We only copy the bytes back
+    // when the sequence is well-formed; malformed sequences are collapsed to an underscore.
+    if (utf8.valid && utf8.length > 1u) {
+      out.append(str, i, utf8.length);
+      i += utf8.length;
+      continue;
+    }
+
+    out.push_back('_');
+    ++i;
+  }
+
   return out;
 }
 std::string str_snprintf(const char *fmt, size_t len, ...) {

@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Union
 import tempfile
 from urllib.parse import urlparse
-import re
-
 _LOGGER = logging.getLogger(__name__)
 
 IS_MACOS = platform.system() == "Darwin"
@@ -362,9 +360,14 @@ def snake_case(value):
     return value.replace(" ", "_").lower()
 
 
-_DISALLOWED_CHARS = re.compile(r"[^a-zA-Z0-9-_]")
-
-
 def sanitize(value):
     """Same behaviour as `helpers.cpp` method `str_sanitize`."""
-    return _DISALLOWED_CHARS.sub("_", value)
+
+    allowed_ascii = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+
+    return "".join(
+        # Keep multi-byte UTF-8 characters so friendly names stay readable while
+        # preserving the historical ASCII whitelist for MQTT topics.
+        c if (c in allowed_ascii or (ord(c) >= 0xC0)) else "_"
+        for c in value
+    )

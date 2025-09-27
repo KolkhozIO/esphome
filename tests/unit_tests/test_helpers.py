@@ -258,6 +258,17 @@ def test_snake_case(text, expected):
     "text, expected",
     (
         ("foo_bar", "foo_bar"),
+        # Non-whitelisted ASCII characters continue to collapse to underscores to
+        # keep legacy topic sanitization behaviour intact.
+        ('!"$%&/()=?foo_bar', "__________foo_bar"),
+        ('foo_!"$%&/()=?bar', "foo___________bar"),
+        ('foo_bar!"$%&/()=?', "foo_bar__________"),
+        ('foo-bar!"$%&/()=?', "foo-bar__________"),
+        # Non-ASCII letters pass through so friendly names remain readable in
+        # MQTT topics, but symbols (like §) are still filtered out.
+        ("датчик", "датчик"),
+        ("датчик 1", "датчик_1"),
+        ("éclair", "éclair"),
         ('!"§$%&/()=?foo_bar', "___________foo_bar"),
         ('foo_!"§$%&/()=?bar', "foo____________bar"),
         ('foo_bar!"§$%&/()=?', "foo_bar___________"),
