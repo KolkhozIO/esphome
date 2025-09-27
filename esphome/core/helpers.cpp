@@ -313,8 +313,8 @@ std::string str_sanitize(const std::string &str) {
 
     // Preserve multi-byte UTF-8 sequences so MQTT topics derived from friendly names stay
     // readable while keeping the legacy ASCII whitelist intact. We let the standard codecvt
-    // facet validate the sequence and only copy the original bytes back when the conversion
-    // succeeds; malformed sequences collapse to an underscore.
+    // facet validate the sequence, copy bytes for code points at or above U+00C0, and collapse
+    // the rest (plus malformed sequences) to underscores to mirror the Python helper.
     std::mbstate_t state{};
     const char *from = str.data() + i;
     const char *from_end = str.data() + str.size();
@@ -325,8 +325,17 @@ std::string str_sanitize(const std::string &str) {
 
     const auto result = codecvt.in(state, from, from_end, from_next, to, to + 1, to_next);
     if (result == std::codecvt_base::ok && from_next > from) {
-      out.append(from, static_cast<size_t>(from_next - from));
-      i += static_cast<size_t>(from_next - from);
+      const size_t consumed = static_cast<size_t>(from_next - from);
+      if (code_point >= 0x00C0) {
+        // Keep decoded code points at U+00C0 and above so Cyrillic, accented Latin, and
+        // other friendly-name characters survive MQTT topic generation.  Lower values
+        // are treated like extended ASCII and collapse to underscores to mirror the
+        // Python helper.
+        out.append(from, consumed);
+      } else {
+        out.push_back('_');
+      }
+      i += consumed;
       continue;
     }
 

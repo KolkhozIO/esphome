@@ -2,7 +2,7 @@
 
 ## Background
 
-ESPHome currently keeps MQTT topics readable by copying ASCII letters, digits, dashes, and underscores while falling back to `_` for the rest.  The updated helpers extend this behaviour so that any well‑formed multi-byte UTF-8 sequence is preserved in the output, ensuring Cyrillic and other non-Latin names survive unchanged.【F:esphome/core/helpers.cpp†L360-L386】【F:esphome/helpers.py†L363-L373】
+ESPHome currently keeps MQTT topics readable by copying ASCII letters, digits, dashes, and underscores while falling back to `_` for the rest.  The updated helpers extend this behaviour so that validated multi-byte UTF-8 sequences at U+00C0 and above are preserved in the output, ensuring Cyrillic and other non-Latin names survive unchanged.【F:esphome/core/helpers.cpp†L300-L339】【F:esphome/helpers.py†L363-L373】
 
 The guard that filters malformed sequences is implemented in C++ because we have to walk raw bytes.  Python mirrors the policy by checking the code point value and replacing disallowed characters with underscores.  Both sides aim to avoid maintaining a massive Unicode lookup table or hand-written decoder logic.
 
@@ -24,11 +24,11 @@ The previous revision used a bespoke `decode_utf8` routine that manually enumera
 * The sanitizer body reduces to `for (uint32_t cp : Utf8Range(str))` and a short `if`/`else` classification.  Invalid sequences raise an iterator error that we can map to `_`.
 * Pros: keeps our own code terse and battle-tested; no locale dependency.  Cons: adds a new third-party header (but still tiny and easy to audit).
 
-### 3. Simplify policy: allow every validated non-ASCII code point
+### 3. Simplify policy: keep non-ASCII code points above a cut-off
 
-* Keep the existing ASCII whitelist, but skip classification altogether for multi-byte sequences—once validation succeeds, append the bytes as-is.【F:esphome/core/helpers.cpp†L372-L379】
-* This is the absolute minimum code (no lookup tables, no dependency) and mirrors the Python implementation's simple `ord(c) >= 0xC0` check.【F:esphome/helpers.py†L366-L372】
-* Trade-off: symbols such as `§` or currency signs remain in topics, which may or may not be acceptable for users expecting strict MQTT naming.  If that is tolerable, this option is the cleanest.
+* Keep the existing ASCII whitelist, but only copy multi-byte sequences when their decoded code point lands at or above U+00C0; lower values collapse to underscores.【F:esphome/core/helpers.cpp†L300-L339】
+* This keeps the code tiny (no lookup tables, no dependency) and mirrors the Python implementation's simple `ord(c) >= 0xC0` check.【F:esphome/helpers.py†L366-L373】
+* Trade-off: extended ASCII symbols such as `§` or currency signs still collapse to `_`, but Cyrillic and other friendly-name letters remain readable.
 
 ### 4. Share a compact allow list generated at build time
 
