@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from esphome import yaml_util
 from esphome.components import mqtt
 from esphome.const import (
     CONF_MQTT,
@@ -66,3 +67,12 @@ def test_get_default_topic_for_uses_friendly_name_when_name_empty(monkeypatch):
     topic = mqtt.get_default_topic_for(data, "sensor", "", "state")
 
     assert topic == "test/sensor/гостиная_датчик/state"
+
+
+def test_topic_name_source_yaml_fixture_provides_config_example(fixture_path):
+    yaml_path = fixture_path / "mqtt" / "topic_name_source.yaml"
+
+    config = yaml_util.load_yaml(yaml_path)
+
+    assert config["mqtt"]["topic_name_source"] == "id"
+    assert config["sensor"][0]["name"] == "Температура Гостиной"
