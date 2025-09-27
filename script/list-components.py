@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
+import argparse
 from pathlib import Path
 import sys
-import argparse
 
-from helpers import git_ls_files, changed_files
-from esphome.loader import get_component, get_platform
-from esphome.core import CORE
+from helpers import changed_files, git_ls_files
+
 from esphome.const import (
     KEY_CORE,
     KEY_TARGET_FRAMEWORK,
@@ -13,10 +12,18 @@ from esphome.const import (
     PLATFORM_ESP32,
     PLATFORM_ESP8266,
 )
+from esphome.core import CORE
+from esphome.loader import get_component, get_platform
 
 
 def filter_component_files(str):
     return str.startswith("esphome/components/") | str.startswith("tests/components/")
+
+
+def get_all_component_files() -> list[str]:
+    """Get all component files from git."""
+    files = git_ls_files()
+    return list(filter(filter_component_files, files))
 
 
 def extract_component_names_array_from_files_array(files):
@@ -43,7 +50,7 @@ def create_components_graph():
     root = Path(__file__).parent.parent
     components_dir = root / "esphome" / "components"
     # Fake some directory so that get_component works
-    CORE.config_path = str(root)
+    CORE.config_path = root
     # Various configuration to capture different outcomes used by `AUTO_LOAD` function.
     TARGET_CONFIGURATIONS = [
         {KEY_TARGET_FRAMEWORK: None, KEY_TARGET_PLATFORM: None},
@@ -55,6 +62,8 @@ def create_components_graph():
     CORE.data[KEY_CORE] = TARGET_CONFIGURATIONS[0]
 
     components_graph = {}
+    platforms = []
+    components = []
 
     for path in components_dir.iterdir():
         if not path.is_dir():
@@ -69,6 +78,13 @@ def create_components_graph():
             )
             sys.exit(1)
 
+        components.append((comp, name, path))
+        if comp.is_platform_component:
+            platforms.append(name)
+
+    platforms = set(platforms)
+
+    for comp, name, path in components:
         for dependency in comp.dependencies:
             add_item_to_components_graph(
                 components_graph, dependency.split(".")[0], name
@@ -83,6 +99,8 @@ def create_components_graph():
 
         for platform_path in path.iterdir():
             platform_name = platform_path.stem
+            if platform_name == name or platform_name not in platforms:
+                continue
             platform = get_platform(platform_name, name)
             if platform is None:
                 continue
@@ -140,7 +158,10 @@ def get_components(files: list[str], get_dependencies: bool = False):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-c", "--changed", action="store_true", help="Only run on changed files"
+        "-c",
+        "--changed",
+        action="store_true",
+        help="List all components required for testing based on changes",
     )
     parser.add_argument(
         "-b", "--branch", help="Branch to compare changed files against"
@@ -150,15 +171,20 @@ def main():
     if args.branch and not args.changed:
         parser.error("--branch requires --changed")
 
-    files = git_ls_files()
-    files = filter(filter_component_files, files)
-
     if args.changed:
-        if args.branch:
-            changed = changed_files(args.branch)
+        # When --changed is passed, only get the changed files
+        changed = changed_files(args.branch)
+
+        # If any base test file(s) changed, there's no need to filter out components
+        if any("tests/test_build_components" in file for file in changed):
+            # Need to get all component files
+            files = get_all_component_files()
         else:
-            changed = changed_files()
-        files = [f for f in files if f in changed]
+            # Only look at changed component files
+            files = [f for f in changed if filter_component_files(f)]
+    else:
+        # Get all component files
+        files = get_all_component_files()
 
     for c in get_components(files, args.changed):
         print(c)
