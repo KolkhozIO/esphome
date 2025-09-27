@@ -1,0 +1,52 @@
+---
+name: QEMU Tests
+
+on:
+  push:
+    branches: [dev, beta, release]
+    paths:
+      - 'esphome/components/ethernet/**'
+      - 'tests/qemu/**'
+      - 'tests/components/ethernet/**'
+      - 'script/run_qemu_tests.sh'
+      - '.github/workflows/qemu.yml'
+  pull_request:
+    paths:
+      - 'esphome/components/ethernet/**'
+      - 'tests/qemu/**'
+      - 'tests/components/ethernet/**'
+      - 'script/run_qemu_tests.sh'
+      - '.github/workflows/qemu.yml'
+  workflow_dispatch:
+
+jobs:
+  qemu:
+    name: Build and run in QEMU
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v5.1
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v4.1.7
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          python -m pip install --upgrade pip setuptools
+          pip install -r requirements.txt -r requirements_optional.txt -r requirements_test.txt
+          pip install -e .
+
+      - name: Run QEMU scenario
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          ./script/run_qemu_tests.sh
+
+      - name: Upload QEMU logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-logs
+          path: tests/qemu/.esphome/build/**/qemu.log
+          if-no-files-found: ignore
