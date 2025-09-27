@@ -1,0 +1,17 @@
+esphome:
+  name: qemu
+  friendly_name: qemu
+
+esp32:
+  board: esp32doit-devkit-v1
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+
+ethernet:
+  type: OPENETH
+
+web_server:
