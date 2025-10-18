@@ -1,0 +1,115 @@
+name: QEMU OpenETH MQTT
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - mqtt-openeth
+      - fix-mqtt-openeth-qemu-workflow-hang
+  pull_request:
+    branches:
+      - mqtt-openeth
+      - fix-mqtt-openeth-qemu-workflow-hang
+
+jobs:
+  qemu-openeth:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upgrade pip and install build tools
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-xtensa mosquitto mosquitto-clients esptool
+
+      - name: Start local Mosquitto
+        run: |
+          set -euo pipefail
+          cat <<'CONF' > mosquitto.conf
+          allow_anonymous true
+          listener 1883 127.0.0.1
+          CONF
+          mosquitto -c mosquitto.conf -d
+
+      - name: Compile ESPHome configuration
+        run: |
+          esphome compile test_mqtt_openeth_ci.yaml
+
+      - name: Run QEMU (OpenETH) and capture logs
+        run: |
+          set -euo pipefail
+          BUILD_DIR=".esphome/build/qemu-test/.pioenvs/qemu-test"
+          pushd "$BUILD_DIR"
+          esptool.py --chip esp32 merge_bin -o qemu_flash_4mb.bin \
+            --flash_mode dio --flash_freq 40m --flash_size 4MB --fill-flash-size 4MB \
+            0x1000 bootloader.bin 0x8000 partitions.bin 0x10000 firmware.bin >/dev/null
+          python - <<'PY'
+          open('qemu_efuse_zero.bin','wb').write(b'\x00'*1024)
+          PY
+          timeout 90s qemu-system-xtensa \
+            -nographic -M esp32 -m 4 \
+            -drive file=qemu_flash_4mb.bin,if=mtd,format=raw \
+            -drive file=qemu_efuse_zero.bin,format=raw,if=none,id=efuse \
+            -global driver=nvram.esp32.efuse,property=drive,value=efuse \
+            -global driver=timer.esp32.timg,property=wdt_disable,value=true \
+            -nic user,model=open_eth \
+            -serial mon:stdio \
+            > qemu.log 2>&1 &
+          QEMU_PID=$!
+          popd
+          echo "QEMU started with PID ${QEMU_PID}"
+          # Give QEMU some time to boot
+          sleep 10
+
+      - name: Subscribe to MQTT and wait for messages
+        run: |
+          set -euo pipefail
+          timeout 60s sh -c "mosquitto_sub -h 127.0.0.1 -p 1883 -u local -P local123 -t 'qemu-test/#' -v -C 3 -W 20 > mqtt.log || true"
+          echo '--- mqtt.log (last 200 lines) ---'
+          tail -n 200 mqtt.log || true
+
+      - name: Stop QEMU
+        if: always()
+        run: |
+          pkill -f qemu-system-xtensa || true
+          sleep 1
+
+      - name: Verify expected MQTT topics
+        run: |
+          set -euo pipefail
+          grep -F "qemu-test/sensor/Тестовый_сенсор_температуры/state" mqtt.log
+          grep -F "qemu-test/sensor/Тестовый_сенсор_влажности/state" mqtt.log
+          grep -F "qemu-test/switch/Тестовый_переключатель_1/state" mqtt.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-openeth-logs
+          path: |
+            .esphome/build/qemu-test/.pioenvs/qemu-test/qemu.log
+            mqtt.log
